@@ -1,11 +1,21 @@
 package pos.ui.gui;
 
+import static pos.ui.gui.Theme.clear;
+import static pos.ui.gui.Theme.font;
+import static pos.ui.gui.Theme.label;
+
 import java.awt.BorderLayout;
 import java.awt.Color;
 import java.awt.Component;
 import java.awt.Dimension;
 import java.awt.FlowLayout;
 import java.awt.Font;
+import java.awt.FontMetrics;
+import java.awt.GraphicsEnvironment;
+import java.awt.GridLayout;
+import java.awt.Rectangle;
+import java.awt.Graphics;
+import java.awt.Graphics2D;
 import java.awt.GridBagConstraints;
 import java.awt.GridBagLayout;
 import java.awt.Insets;
@@ -13,12 +23,12 @@ import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.math.BigDecimal;
 import java.text.ParseException;
+import java.util.Locale;
 import java.util.Set;
 import java.util.function.Supplier;
 
 import javax.swing.BorderFactory;
 import javax.swing.Box;
-import javax.swing.BoxLayout;
 import javax.swing.JButton;
 import javax.swing.JComboBox;
 import javax.swing.JComponent;
@@ -27,16 +37,14 @@ import javax.swing.JLabel;
 import javax.swing.JOptionPane;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
-import javax.swing.JSeparator;
 import javax.swing.JSpinner;
 import javax.swing.JSplitPane;
 import javax.swing.JTable;
-import javax.swing.JTextArea;
-import javax.swing.ListSelectionModel;
 import javax.swing.SpinnerNumberModel;
 import javax.swing.SwingConstants;
 import javax.swing.border.EmptyBorder;
-import javax.swing.table.DefaultTableCellRenderer;
+import javax.swing.plaf.basic.BasicSplitPaneDivider;
+import javax.swing.plaf.basic.BasicSplitPaneUI;
 import javax.swing.table.DefaultTableModel;
 
 import pos.domain.Money;
@@ -58,34 +66,41 @@ import pos.domain.receipts.Receipt;
 import pos.services.CheckoutService;
 import pos.ui.AppInfo;
 import pos.ui.ReceiptPrinter;
+import pos.ui.gui.Theme.Card;
+import pos.ui.gui.Theme.FlatButton;
+import pos.ui.gui.Theme.Pill;
+import pos.ui.gui.Theme.PillCell;
+import pos.ui.gui.Theme.TextCell;
+import pos.ui.gui.Theme.Variant;
+import pos.ui.gui.Theme.Well;
 
 public class PosWindow extends JFrame {
-    private static final Color MUTED = new Color(0x6E7781);
-    private static final Color OUT_OF_STOCK = new Color(0xCF222E);
-    private static final Color LOW_STOCK = new Color(0xBF8700);
     private static final int LOW_STOCK_THRESHOLD = 5;
 
     private final Inventory inventory;
     private final CheckoutService checkoutService;
     private final ReceiptPrinter receiptPrinter;
 
-    private final DefaultTableModel productModel = readOnlyModel("ID", "Name", "Category", "Price", "Stock");
-    private final DefaultTableModel orderModel = readOnlyModel("ID", "Name", "Qty", "Unit price", "Line total");
+    private final DefaultTableModel productModel = readOnlyModel("ID", "Product", "Category", "Price", "Stock");
+    private final DefaultTableModel orderModel = readOnlyModel("ID", "Item", "Qty", "Unit price", "Line total");
     private final JTable productTable = new JTable(productModel);
-    private final JTable orderTable = new JTable(orderModel);
+    private final JTable orderTable = new EmptyStateTable(orderModel,
+            "No items yet", "Double-click a product, or select it and press Add to order.");
     private final JSpinner qtySpinner = new JSpinner(new SpinnerNumberModel(1, 1, 999, 1));
     private final JComboBox<DiscountOption> discountBox = new JComboBox<>(DiscountOption.values());
     private final JComboBox<TaxOption> taxBox = new JComboBox<>(TaxOption.values());
 
-    private final JLabel orderTitle = new JLabel();
+    private final JLabel orderBadge = label("", Font.BOLD, 13f, Theme.TEXT);
+    private final JLabel itemsBadge = label("", Font.PLAIN, 13f, Theme.MUTED);
+    private Card orderCard;
     private final JLabel subtotalValue = amountLabel();
     private final JLabel discountName = new JLabel();
     private final JLabel discountValue = amountLabel();
     private final JLabel taxName = new JLabel();
     private final JLabel taxValue = amountLabel();
     private final JLabel totalValue = amountLabel();
-    private final JButton removeButton = new JButton("Remove selected");
-    private final JButton checkoutButton = new JButton("Checkout");
+    private final JButton removeButton = new FlatButton("Remove selected", Variant.DANGER_GHOST);
+    private final JButton checkoutButton = new FlatButton("Checkout", Variant.SUCCESS);
 
     private Order currentOrder;
     private int nextOrderId = 1;
@@ -104,40 +119,68 @@ public class PosWindow extends JFrame {
         setContentPane(buildContent());
         startNewOrder();
 
-        setMinimumSize(new Dimension(1000, 620));
-        pack();
+        setMinimumSize(new Dimension(1000, 640));
+        Rectangle screen = GraphicsEnvironment.getLocalGraphicsEnvironment().getMaximumWindowBounds();
+        setSize(Math.min(1280, screen.width), Math.min(820, screen.height));
         setLocationRelativeTo(null);
     }
 
+    // ------------------------------------------------------------------ layout
+
     private JComponent buildContent() {
-        JPanel root = new JPanel(new BorderLayout(12, 12));
-        root.setBorder(new EmptyBorder(12, 12, 12, 12));
+        JPanel root = new JPanel(new BorderLayout());
+        root.setBackground(Theme.BACKGROUND);
         root.add(buildHeader(), BorderLayout.NORTH);
 
-        JSplitPane split = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, buildProductsPanel(), buildOrderPanel());
-        split.setResizeWeight(0.5);
-        split.setBorder(null);
-        root.add(split, BorderLayout.CENTER);
+        JSplitPane split = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, buildProductsPanel(), buildOrderColumn());
+        split.setResizeWeight(0.55);
+        split.setOpaque(false);
+        split.setDividerSize(16);
+        split.setUI(new BasicSplitPaneUI() {
+            @Override
+            public BasicSplitPaneDivider createDefaultDivider() {
+                BasicSplitPaneDivider divider = new BasicSplitPaneDivider(this) {
+                    @Override
+                    public void paint(Graphics g) {
+                        // Invisible: the gap between the cards is the divider.
+                    }
+                };
+                divider.setBorder(null);
+                return divider;
+            }
+        });
+        split.setBorder(null); // after setUI, which would otherwise reinstall the look-and-feel border
+
+        JPanel body = clear(new BorderLayout());
+        body.setBorder(new EmptyBorder(16, 16, 16, 16));
+        body.add(split, BorderLayout.CENTER);
+        root.add(body, BorderLayout.CENTER);
         return root;
     }
 
     private JComponent buildHeader() {
-        JLabel title = new JLabel(AppInfo.NAME);
-        title.setFont(title.getFont().deriveFont(Font.BOLD, 20f));
-        orderTitle.setForeground(MUTED);
-        orderTitle.setFont(orderTitle.getFont().deriveFont(14f));
+        JPanel header = new JPanel(new BorderLayout(16, 0));
+        header.setBackground(Theme.SURFACE);
+        header.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createMatteBorder(0, 0, 1, 0, Theme.BORDER), new EmptyBorder(12, 20, 12, 20)));
 
-        JPanel header = new JPanel(new BorderLayout());
-        header.add(title, BorderLayout.WEST);
-        header.add(orderTitle, BorderLayout.EAST);
+        JPanel order = clear(new FlowLayout(FlowLayout.RIGHT, 6, 0));
+        order.add(orderBadge);
+        order.add(itemsBadge);
+
+        header.add(label("Point of Sale", Font.BOLD, 17f, Theme.TEXT), BorderLayout.WEST);
+        header.add(order, BorderLayout.EAST);
         return header;
     }
 
     private JComponent buildProductsPanel() {
-        configureTable(productTable);
-        setColumnWidths(productTable, 40, 180, 100, 100, 60);
-        alignRight(productTable, 3);
-        productTable.getColumnModel().getColumn(4).setCellRenderer(new StockRenderer());
+        Theme.styleTable(productTable, SwingConstants.LEFT, SwingConstants.LEFT, SwingConstants.LEFT,
+                SwingConstants.RIGHT, SwingConstants.RIGHT);
+        setColumnWidths(productTable, 50, 200, 120, 110, 100);
+        productTable.getColumnModel().getColumn(0).setCellRenderer(new TextCell(SwingConstants.LEFT, Font.PLAIN, Theme.SUBTLE));
+        productTable.getColumnModel().getColumn(1).setCellRenderer(new TextCell(SwingConstants.LEFT, Font.BOLD, null));
+        productTable.getColumnModel().getColumn(2).setCellRenderer(new PillCell(false, PosWindow::categoryPill));
+        productTable.getColumnModel().getColumn(4).setCellRenderer(new PillCell(true, PosWindow::stockPill));
         productTable.addMouseListener(new MouseAdapter() {
             @Override
             public void mouseClicked(MouseEvent e) {
@@ -147,92 +190,120 @@ public class PosWindow extends JFrame {
             }
         });
 
-        JButton addButton = new JButton("Add to order");
+        JButton addButton = new FlatButton("Add to order", Variant.PRIMARY);
         addButton.addActionListener(e -> safely(this::addSelectedProduct));
-        JButton restockButton = new JButton("Restock...");
+        JButton restockButton = new FlatButton("Restock…", Variant.SECONDARY);
         restockButton.addActionListener(e -> safely(this::restockSelectedProduct));
 
-        JPanel actions = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 0));
-        actions.add(new JLabel("Qty"));
-        actions.add(qtySpinner);
-        actions.add(addButton);
-        actions.add(Box.createHorizontalStrut(12));
-        actions.add(restockButton);
+        qtySpinner.setFont(font(Font.PLAIN, 13f));
+        qtySpinner.setPreferredSize(new Dimension(72, 34));
 
-        JPanel panel = section("Products  (double-click to add)");
-        panel.add(new JScrollPane(productTable), BorderLayout.CENTER);
-        panel.add(actions, BorderLayout.SOUTH);
-        return panel;
+        JPanel left = clear(new FlowLayout(FlowLayout.LEFT, 8, 0));
+        left.add(label("Qty", Font.BOLD, 12.5f, Theme.MUTED));
+        left.add(qtySpinner);
+        left.add(addButton);
+        JPanel actions = clear(new BorderLayout());
+        actions.add(left, BorderLayout.WEST);
+        actions.add(restockButton, BorderLayout.EAST);
+
+        Card card = new Card("Products", null);
+        card.add(Theme.scroll(productTable), BorderLayout.CENTER);
+        card.add(actions, BorderLayout.SOUTH);
+        return card;
     }
 
-    private JComponent buildOrderPanel() {
-        configureTable(orderTable);
-        setColumnWidths(orderTable, 40, 170, 50, 100, 110);
-        alignRight(orderTable, 2, 3, 4);
+    private JComponent buildOrderColumn() {
+        Theme.styleTable(orderTable, SwingConstants.LEFT, SwingConstants.LEFT, SwingConstants.CENTER,
+                SwingConstants.RIGHT, SwingConstants.RIGHT);
+        setColumnWidths(orderTable, 46, 170, 50, 100, 110);
+        orderTable.getColumnModel().getColumn(0).setCellRenderer(new TextCell(SwingConstants.LEFT, Font.PLAIN, Theme.SUBTLE));
+        orderTable.getColumnModel().getColumn(1).setCellRenderer(new TextCell(SwingConstants.LEFT, Font.BOLD, null));
+        orderTable.getColumnModel().getColumn(3).setCellRenderer(new TextCell(SwingConstants.RIGHT, Font.PLAIN, Theme.MUTED));
+        orderTable.getColumnModel().getColumn(4).setCellRenderer(new TextCell(SwingConstants.RIGHT, Font.BOLD, null));
 
         removeButton.addActionListener(e -> safely(this::removeSelectedItem));
-        JPanel removeRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
-        removeRow.add(removeButton);
 
-        JPanel items = section("Current order");
-        items.add(new JScrollPane(orderTable), BorderLayout.CENTER);
-        items.add(removeRow, BorderLayout.SOUTH);
+        orderCard = new Card("Current order", null);
+        removeButton.setPreferredSize(new Dimension(removeButton.getPreferredSize().width, 20));
+        orderCard.setHeaderAction(removeButton);
+        JScrollPane orderScroll = Theme.scroll(orderTable);
+        orderScroll.setPreferredSize(new Dimension(420, 220));
+        orderCard.add(orderScroll, BorderLayout.CENTER);
 
-        JPanel right = new JPanel(new BorderLayout(0, 12));
-        right.add(items, BorderLayout.CENTER);
-        right.add(buildPaymentPanel(), BorderLayout.SOUTH);
-        return right;
+        JPanel column = clear(new BorderLayout(0, 16));
+        column.add(orderCard, BorderLayout.CENTER);
+        column.add(buildPaymentPanel(), BorderLayout.SOUTH);
+        return column;
     }
 
     private JComponent buildPaymentPanel() {
-        JButton applyDiscount = new JButton("Apply");
+        JButton applyDiscount = new FlatButton("Apply", Variant.SECONDARY);
         applyDiscount.addActionListener(e -> safely(this::applySelectedDiscount));
         taxBox.addActionListener(e -> {
             if (!resettingTaxBox) {
                 safely(() -> currentOrder.setTaxPolicy(selectedTaxOption().create()));
             }
         });
+        for (JComboBox<?> box : java.util.List.of(discountBox, taxBox)) {
+            box.setFont(font(Font.PLAIN, 13f));
+            box.setPreferredSize(new Dimension(box.getPreferredSize().width, 34));
+        }
 
-        JPanel pricing = new JPanel(new GridBagLayout());
-        addPricingRow(pricing, 0, "Discount", discountBox, applyDiscount);
-        addPricingRow(pricing, 1, "Tax", taxBox, null);
+        JPanel discountField = clear(new BorderLayout(8, 0));
+        discountField.add(discountBox, BorderLayout.CENTER);
+        discountField.add(applyDiscount, BorderLayout.EAST);
+        JPanel pricing = clear(new GridLayout(1, 2, 14, 0));
+        pricing.add(field("Discount", discountField));
+        pricing.add(field("Tax", taxBox));
 
-        JPanel totals = new JPanel(new GridBagLayout());
-        addTotalRow(totals, 0, new JLabel("Subtotal"), subtotalValue);
-        addTotalRow(totals, 1, discountName, discountValue);
-        addTotalRow(totals, 2, taxName, taxValue);
+        for (JLabel name : new JLabel[] {discountName, taxName}) {
+            name.setFont(font(Font.PLAIN, 13f));
+            name.setForeground(Theme.MUTED);
+        }
+        Well totals = new Well(new GridBagLayout());
+        addTotalRow(totals, 0, label("Subtotal", Font.PLAIN, 13f, Theme.MUTED), subtotalValue, 0);
+        addTotalRow(totals, 1, discountName, discountValue, 0);
+        addTotalRow(totals, 2, taxName, taxValue, 0);
+        JComponent rule = new JPanel();
+        rule.setBackground(Theme.BORDER);
+        rule.setPreferredSize(new Dimension(1, 1));
         GridBagConstraints sep = new GridBagConstraints();
         sep.gridy = 3;
         sep.gridwidth = 2;
         sep.fill = GridBagConstraints.HORIZONTAL;
-        sep.insets = new Insets(6, 0, 6, 0);
-        totals.add(new JSeparator(), sep);
-        JLabel totalName = new JLabel("TOTAL");
-        Font big = totalName.getFont().deriveFont(Font.BOLD, 18f);
-        totalName.setFont(big);
-        totalValue.setFont(big);
-        addTotalRow(totals, 4, totalName, totalValue);
+        sep.insets = new Insets(8, 0, 6, 0);
+        totals.add(rule, sep);
+        JLabel totalName = label("Total due", Font.BOLD, 15f, Theme.TEXT);
+        totalValue.setFont(font(Font.BOLD, 22f));
+        addTotalRow(totals, 4, totalName, totalValue, 0);
 
-        JButton cancelButton = new JButton("Cancel order");
+        JButton cancelButton = new FlatButton("Cancel order", Variant.SECONDARY);
         cancelButton.addActionListener(e -> safely(this::cancelOrder));
-        checkoutButton.setFont(checkoutButton.getFont().deriveFont(Font.BOLD));
+        checkoutButton.setFont(font(Font.BOLD, 15f));
+        checkoutButton.setPreferredSize(new Dimension(220, 44));
         checkoutButton.addActionListener(e -> safely(this::checkout));
-        JPanel buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 0));
-        buttons.add(cancelButton);
-        buttons.add(checkoutButton);
+        cancelButton.setPreferredSize(new Dimension(cancelButton.getPreferredSize().width, 44));
 
-        JPanel body = new JPanel();
-        body.setLayout(new BoxLayout(body, BoxLayout.Y_AXIS));
-        for (JComponent part : new JComponent[] {pricing, totals, buttons}) {
-            part.setAlignmentX(Component.LEFT_ALIGNMENT);
-            body.add(part);
-            body.add(Box.createVerticalStrut(10));
-        }
+        JPanel buttons = clear(new GridBagLayout());
+        GridBagConstraints b = new GridBagConstraints();
+        b.fill = GridBagConstraints.BOTH;
+        b.insets = new Insets(0, 0, 0, 10);
+        buttons.add(cancelButton, b);
+        b.weightx = 1;
+        b.insets = new Insets(0, 0, 0, 0);
+        buttons.add(checkoutButton, b);
 
-        JPanel panel = section("Payment");
-        panel.add(body, BorderLayout.CENTER);
-        return panel;
+        JPanel body = clear(new BorderLayout(0, 12));
+        body.add(pricing, BorderLayout.NORTH);
+        body.add(totals, BorderLayout.CENTER);
+        body.add(buttons, BorderLayout.SOUTH);
+
+        Card card = new Card("Payment", null);
+        card.add(body, BorderLayout.CENTER);
+        return card;
     }
+
+    // ----------------------------------------------------------------- actions
 
     private void startNewOrder() {
         currentOrder = new Order(nextOrderId++);
@@ -308,15 +379,7 @@ public class PosWindow extends JFrame {
     }
 
     private void showReceipt(Receipt receipt) {
-        String text = receiptPrinter.format(receipt);
-        JTextArea area = new JTextArea(text);
-        area.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 13));
-        area.setEditable(false);
-        area.setMargin(new Insets(8, 8, 8, 8));
-        area.setRows(Math.min(text.split("\\R").length, 30));
-        area.setColumns(52);
-        JOptionPane.showMessageDialog(this, new JScrollPane(area),
-                "Receipt - order #" + receipt.getOrderId(), JOptionPane.PLAIN_MESSAGE);
+        ReceiptDialog.show(this, receipt, receiptPrinter.format(receipt));
     }
 
     private void safely(Runnable action) {
@@ -352,7 +415,9 @@ public class PosWindow extends JFrame {
         reselect(productTable, productModel, selectedProductId);
         reselect(orderTable, orderModel, selectedItemId);
 
-        orderTitle.setText("Order #" + currentOrder.getId() + "  ·  " + units + (units == 1 ? " item" : " items"));
+        orderBadge.setText("Order #" + currentOrder.getId());
+        itemsBadge.setText("·  " + units + (units == 1 ? " item" : " items"));
+
         subtotalValue.setText(Money.naira(currentOrder.subTotal()));
         discountName.setText("Discount (" + currentOrder.getDiscount().describe() + ")");
         discountValue.setText("-" + Money.naira(currentOrder.discountTotal()));
@@ -364,6 +429,8 @@ public class PosWindow extends JFrame {
         checkoutButton.setEnabled(hasItems);
         removeButton.setEnabled(hasItems);
     }
+
+    // ----------------------------------------------------------------- helpers
 
     private Product selectedProduct() {
         Integer id = selectedId(productTable, productModel);
@@ -421,6 +488,23 @@ public class PosWindow extends JFrame {
         }
     }
 
+    private static Pill categoryPill(Object value) {
+        Category category = (Category) value;
+        String name = category.name().charAt(0) + category.name().substring(1).toLowerCase(Locale.ROOT);
+        return new Pill(name, Theme.MUTED, null);
+    }
+
+    private static Pill stockPill(Object value) {
+        int stock = (Integer) value;
+        if (stock == 0) {
+            return new Pill("Sold out", Theme.DANGER, null);
+        }
+        if (stock <= LOW_STOCK_THRESHOLD) {
+            return new Pill(String.valueOf(stock), Theme.WARNING, null);
+        }
+        return new Pill(String.valueOf(stock), Theme.TEXT, null);
+    }
+
     private static Integer selectedId(JTable table, DefaultTableModel model) {
         int row = table.getSelectedRow();
         return row < 0 ? null : (Integer) model.getValueAt(table.convertRowIndexToModel(row), 0);
@@ -448,62 +532,32 @@ public class PosWindow extends JFrame {
         };
     }
 
-    private static void configureTable(JTable table) {
-        table.setRowHeight(26);
-        table.setFillsViewportHeight(true);
-        table.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
-        table.setShowVerticalLines(false);
-        table.getTableHeader().setReorderingAllowed(false);
-    }
-
     private static void setColumnWidths(JTable table, int... widths) {
         for (int i = 0; i < widths.length; i++) {
             table.getColumnModel().getColumn(i).setPreferredWidth(widths[i]);
         }
     }
 
-    private static void alignRight(JTable table, int... columns) {
-        DefaultTableCellRenderer right = new DefaultTableCellRenderer();
-        right.setHorizontalAlignment(SwingConstants.RIGHT);
-        for (int column : columns) {
-            table.getColumnModel().getColumn(column).setCellRenderer(right);
-        }
-    }
-
-    private static JPanel section(String title) {
-        JPanel panel = new JPanel(new BorderLayout(0, 8));
-        panel.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createTitledBorder(title), new EmptyBorder(6, 8, 8, 8)));
-        return panel;
-    }
-
     private static JLabel amountLabel() {
         JLabel label = new JLabel();
         label.setHorizontalAlignment(SwingConstants.RIGHT);
+        label.setFont(font(Font.PLAIN, 13f));
+        label.setForeground(Theme.TEXT);
         return label;
     }
 
-    private static void addPricingRow(JPanel panel, int row, String label, JComponent field, JComponent extra) {
-        GridBagConstraints c = new GridBagConstraints();
-        c.gridy = row;
-        c.insets = new Insets(2, 0, 2, 8);
-        c.anchor = GridBagConstraints.WEST;
-        panel.add(new JLabel(label), c);
-        c.fill = GridBagConstraints.HORIZONTAL;
-        c.weightx = 1;
-        panel.add(field, c);
-        if (extra != null) {
-            c.fill = GridBagConstraints.NONE;
-            c.weightx = 0;
-            c.insets = new Insets(2, 0, 2, 0);
-            panel.add(extra, c);
-        }
+    /** A form field: a small caption above the control. */
+    private static JComponent field(String caption, JComponent control) {
+        JPanel panel = clear(new BorderLayout(0, 6));
+        panel.add(label(caption, Font.BOLD, 12f, Theme.MUTED), BorderLayout.NORTH);
+        panel.add(control, BorderLayout.CENTER);
+        return panel;
     }
 
-    private static void addTotalRow(JPanel panel, int row, JLabel name, JLabel value) {
+    private static void addTotalRow(JPanel panel, int row, JLabel name, JLabel value, int gap) {
         GridBagConstraints c = new GridBagConstraints();
         c.gridy = row;
-        c.insets = new Insets(2, 0, 2, 0);
+        c.insets = new Insets(2, 0, 2 + gap, 0);
         c.anchor = GridBagConstraints.WEST;
         c.weightx = 1;
         panel.add(name, c);
@@ -512,27 +566,38 @@ public class PosWindow extends JFrame {
         panel.add(value, c);
     }
 
-    private static class StockRenderer extends DefaultTableCellRenderer {
-        StockRenderer() {
-            setHorizontalAlignment(SwingConstants.RIGHT);
+    // ------------------------------------------------------- small components
+
+    /** A table that shows a friendly message instead of a blank area when it has no rows. */
+    private static final class EmptyStateTable extends JTable {
+        private final String headline;
+        private final String hint;
+
+        EmptyStateTable(DefaultTableModel model, String headline, String hint) {
+            super(model);
+            this.headline = headline;
+            this.hint = hint;
         }
 
         @Override
-        public Component getTableCellRendererComponent(
-                JTable table, Object value, boolean isSelected, boolean hasFocus, int row, int column) {
-            super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
-            int stock = (Integer) value;
-            if (isSelected) {
-                setForeground(table.getSelectionForeground());
-            } else if (stock == 0) {
-                setForeground(OUT_OF_STOCK);
-            } else if (stock <= LOW_STOCK_THRESHOLD) {
-                setForeground(LOW_STOCK);
-            } else {
-                setForeground(table.getForeground());
+        protected void paintComponent(Graphics g) {
+            super.paintComponent(g);
+            if (getRowCount() > 0) {
+                return;
             }
-            setText(stock == 0 ? "Sold out" : String.valueOf(stock));
-            return this;
+            Graphics2D g2 = Theme.smooth(g);
+            int cx = getWidth() / 2;
+            int top = Math.max(8, (getHeight() - 38) / 2);
+
+            g2.setFont(font(Font.BOLD, 13f));
+            FontMetrics fm = g2.getFontMetrics();
+            g2.setColor(Theme.TEXT);
+            g2.drawString(headline, cx - fm.stringWidth(headline) / 2, top + fm.getAscent());
+            g2.setFont(font(Font.PLAIN, 12.5f));
+            FontMetrics small = g2.getFontMetrics();
+            g2.setColor(Theme.MUTED);
+            g2.drawString(hint, cx - small.stringWidth(hint) / 2, top + fm.getHeight() + 2 + small.getAscent());
+            g2.dispose();
         }
     }
 

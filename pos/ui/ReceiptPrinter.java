@@ -7,7 +7,7 @@ import pos.domain.receipts.Receipt;
 import pos.domain.receipts.ReceiptLine;
 
 public class ReceiptPrinter {
-    private static final String STORE_NAME = "JOHN'S POS STORE";
+    private static final String STORE_NAME = AppInfo.STORE_NAME;
     private static final int WIDTH = 50;
     private static final DateTimeFormatter DATE_FORMAT =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");

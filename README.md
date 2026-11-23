@@ -168,6 +168,8 @@ classDiagram
 
 ### Key design decisions
 
+For a full walkthrough of how the code shows composition, aggregation, encapsulation, abstraction, inheritance and polymorphism, see [docs/OOP-CONCEPTS.md](docs/OOP-CONCEPTS.md).
+
 **Composition: `Order` owns `OrderItem`.** `OrderItem`'s constructor and `increaseQuantity()` are package-private, so only `Order` can create or change items, and `getItems()` returns a read-only copy. Adding the same product twice merges it into one line. An item copies the product's price when it is added, so a later price change doesn't affect an open order.
 
 **Aggregation: `OrderItem` → `Product`.** Products live in the `Inventory` independently of any order. An item only refers to one.
